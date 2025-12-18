@@ -6,6 +6,32 @@ import re
 from nltk.corpus import stopwords
 import pandas as pd
 
+
+def fetch_listing(dept_list, session):
+    base_list_url = "https://utdirect.utexas.edu/apps/student/coursedocs/nlogon/"
+    url_list = []
+
+    for dept in dept_list:
+        params = {
+            "year": "",
+            "semester": "",
+            "department": dept,
+            "course_number": "",
+            "course_title": "",
+            "unique": "",
+            "instructor_first": "",
+            "instructor_last": "",
+            "course_type": "In Residence",
+            "search": "Search",
+        }
+        response = session.get(base_list_url, params=params, timeout=30)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+        url_list.append(response.url)
+
+    return url_list
+
+
 def extract_data(url_list, session):
     base_url = 'https://utdirect.utexas.edu'
 
@@ -57,8 +83,10 @@ def syllabi_dataframe(raw_data, text):
     data.drop(columns=['Unique', 'Survey'], inplace=True)
     return data
 
-def main(url_list):
+def main(dept_list):
     session = requests.Session()
+
+    url_list = fetch_listing(dept_list, session)
     raw_data, raw_syllabi = extract_data(url_list, session)
     full_text = []
     for syllabus_url in raw_syllabi:
@@ -70,7 +98,4 @@ def main(url_list):
 
 
 if __name__ == "__main__":
-    url_list = ['https://utdirect.utexas.edu/apps/student/coursedocs/nlogon/?year=&semester=&department=A+I&course_number=&course_title=&unique=&instructor_first=&instructor_last=&course_type=In+Residence&search=Search', 
-                'https://utdirect.utexas.edu/apps/student/coursedocs/nlogon/?year=&semester=&department=AED&course_number=&course_title=&unique=&instructor_first=&instructor_last=&course_type=In+Residence&search=Search']
-    data = main(url_list)
-    print(data)
+    data = main(dept_list)
