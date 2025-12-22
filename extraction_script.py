@@ -1,7 +1,10 @@
 import requests
+from urllib3.util.retry import Retry
+from urllib3.exceptions import NameResolutionError
 from bs4 import BeautifulSoup
 import io
 import pdfplumber
+from pdfplumber.utils.exceptions import PdfminerException
 import logging
 # Reduce noise from pdfminer
 logging.getLogger("pdfminer").setLevel(logging.ERROR)
@@ -9,6 +12,28 @@ import re
 from nltk.corpus import stopwords
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
+
+def make_session():
+    retry = Retry(
+        total=5,
+        connect=0,          
+        read=5,
+        backoff_factor=2,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+        raise_on_status=False
+    )
+
+    adapter = requests.adapters.HTTPAdapter(
+        max_retries=retry,
+        pool_connections=10,
+        pool_maxsize=10
+    )
+
+    session = requests.Session()
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 
 def fetch_listing(dept_list, year, sem, headers, session):
@@ -57,15 +82,32 @@ def extract_data(url_list, session, headers):
                     if 'download' in href:
                         href = base_url + href # full URL of syllabus PDF
                         raw_syllabi.append(href)
+                else:
+                    raw_syllabi.append(None)
                 cols = [ele.text.strip() for ele in cols]
                 raw_data.append(cols)
 
     return raw_data, raw_syllabi
 
 def extract_syllabi(url, session, headers):
-    response = session.get(url, headers=headers, timeout=30)
-    with pdfplumber.open(io.BytesIO(response.content)) as pdf:
-        return "\n".join(page.extract_text() or "" for page in pdf.pages)
+    try:
+        response = session.get(url, headers=headers, timeout=30)
+
+        content_type = response.headers.get("Content-Type", "").lower()
+        if "pdf" not in content_type:
+            return None
+        
+        with pdfplumber.open(io.BytesIO(response.content)) as pdf:
+            return "\n".join(page.extract_text() or "" for page in pdf.pages)
+    except (
+        requests.exceptions.ReadTimeout,
+        requests.exceptions.ConnectionError,
+        NameResolutionError,
+        PdfminerException,
+        ValueError,
+        ):
+        # Not a valid PDF
+        return None
 
     
 def clean_text(text, stop_words, clean_re):
@@ -77,8 +119,14 @@ def clean_text(text, stop_words, clean_re):
     return cleaned_text
 
 def fetch_and_clean_syllabus(url, session, headers, stop_words, clean_re):
+    if url is None:
+        return None
+    
     text = extract_syllabi(url, session, headers)
-    return clean_text(text, stop_words, clean_re)
+    if text is None:
+        return None
+    else:
+        return clean_text(text, stop_words, clean_re)
 
 def syllabi_dataframe(raw_data, text):
     data = pd.DataFrame(raw_data, columns = ['Semester', 'Department', 'Course Number', 
@@ -100,7 +148,7 @@ def main(dept_list, year, sem):
     "Accept": "application/pdf,application/xhtml+xml",
     }
 
-    session = requests.Session()
+    session = make_session()
 
     adapter = requests.adapters.HTTPAdapter(
         max_retries=3,
